@@ -29,14 +29,19 @@
 ///     4/15/2021
 ///
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <getopt.h>
 #include <limits.h>
+#include <netdb.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <string.h>
+#include <sys/socket.h>
+
+#define IP_LEN 15
 
 #define LL long long
 #define UI unsigned int
@@ -72,7 +77,41 @@ static void ping_loop( )
 /// @param ip_buf: ip address buffer
 /// @param host_buf: hostname buffer
 ///
+/// @pre: 
+/// 	dest is NOT null
+/// 	size of ip_buf is IP_LEN+1
+/// 	size of host_buf is HOST_NAME_MAX + 1
+///
+/// @post:
+/// 	ip_buf may be NULL or written
+///		host_buf may be NULL or written
+///
 static void resolve( char* dest, char* ip_buf, char* host_buf ) {
+	struct sockaddr_in sa;
+	if ( !inet_pton( AF_INET, dest, &sa.sin_addr ) == 0 ) {
+		printf("IP\n");
+	} else {
+		strncpy( host_buf, dest, HOST_NAME_MAX );
+
+		struct addrinfo hints, *addr_res = NULL;
+		hints.ai_flags = AI_PASSIVE;
+		hints.ai_socktype = 0;
+		hints.ai_family = AF_INET;
+		hints.ai_protocol = 0;
+
+		// resolve hostname to get IP address
+		int err = getaddrinfo( host_buf, NULL, &hints, &addr_res );
+		if ( err ) {
+			fprintf( stderr, "ping: %s\n", gai_strerror( err ) );
+		} else {
+			struct sockaddr_in* sa = ( struct sockaddr_in* ) addr_res->ai_addr;
+			inet_ntop( AF_INET, &sa->sin_addr, ip_buf, IP_LEN );
+		}
+
+		freeaddrinfo( addr_res );
+	}
+
+
 
 }
 
@@ -166,11 +205,19 @@ main( int argc, char* argv[] )
 		return EXIT_FAILURE;
 	} else {
 		destination = argv[optind];
+		if ( strlen( destination ) > HOST_NAME_MAX ) {
+			fprintf( stderr, "ping: %s: Name or service not known\n", destination );
+			return EXIT_FAILURE;
+		}
 	}
 
 	// get ip and hostname from destination arg
-	char ip[15] = { '\0' };
-	char host[HOST_NAME_MAX] = { '\0' };
+	char ip[IP_LEN + 1];
+	memset( ip, 0, IP_LEN + 1 );
+
+	char host[HOST_NAME_MAX + 1];
+	memset( host, 0, HOST_NAME_MAX + 1 );
+
 	resolve( destination, ip, host );
 
 	// unknown hostname results in empty ip
@@ -179,6 +226,7 @@ main( int argc, char* argv[] )
 		return EXIT_FAILURE;
 	}
 
+	printf("IP: %s\nHost: %s\n", ip, host);
 
 	return EXIT_SUCCESS;
 }
