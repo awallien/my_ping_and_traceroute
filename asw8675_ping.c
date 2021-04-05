@@ -19,7 +19,7 @@
 ///             bytes, which translates into 64 ICMP data bytes with 8 bytes of ICMP
 ///             header data.
 ///
-///         -t timeout: specify timeout, in seconds, before ping exits regardless of
+///         -t TTL: specify timeout, in seconds, before ping exits regardless of
 ///             how many packets have been received.  
 ///
 /// author: 
@@ -31,15 +31,19 @@
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <errno.h>
 #include <getopt.h>
 #include <limits.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/ip_icmp.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #define IP_LEN 15
 
@@ -48,29 +52,78 @@
 #define UL unsigned long
 
 /// boolean used to determine if pinging should stop
-static volatile bool stop;
+static volatile bool stop = false;
 
 
 ///
 /// signal handler when the user inputs control c for this program, which
 /// is to stop sending pings to a destination node
 ///
-static void ctrl_c_handler( )
+static void 
+ctrl_c_handler( )
 {
 	stop = true;
 	printf("stop!\n");
 }
 
 
-
-static void ping_loop( )
+///
+/// Handles making and sending the ICMP packets and receives ICMP replies, also
+/// outputs the statistics of the whole ping execution
+/// 
+/// @param sock_fd: socket file descriptor for sending ICMP packets
+/// @param ip: the ip address
+/// @param count: the number of packets per ping execution
+/// @param wait: the seconds to wait after sending each packet
+/// @param pkt_sz: the size of packets to send to destination
+/// @param timeout: TTL of packets
+///
+static void 
+ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
 {
+	bool count_set = count != 0;
+	UL pkts_tx, pkts_rx;
+	double rtt_min, rtt_avg, rtt_max, rtt_mdev;
+	int sockopt;
+	
+	// set the 'wait' timeout for the socket
+	struct timeval time_wait;
+	time_wait.tv_sec = (unsigned int) wait;
+	time_wait.tv_usec = 0;
+	if ( setsockopt( sock_fd, SOL_SOCKET, SO_RCVTIMEO, &time_wait, sizeof( time_wait ) ) ) {
+		fprintf( stderr, "ping: setsockopt( SO_RCVTIMEO ) failed: %s\n", strerror( errno ) );
+		return;
+	}
 
+	// set the ttl timeout for the socket
+	if ( setsockopt( sock_fd, SOL_IP, IP_TTL, &timeout, sizeof( timeout ) ) ) {
+		fprintf( stderr, "ping: setsockopt( IP_TTL ) failed: %s\n", strerror( errno ) );
+		return;
+	}
+
+	while ( !stop ) {
+
+		// break based off limited number of counts
+		if ( count_set && count-- == 0 )
+			break;
+
+		// send the socket
+
+		// any reply?
+
+	}
+
+	// all done, print statistics
+	printf( "\n--- %s ping statistics ---\n", ip );
+	printf( "%lu packets transmitted, %lu received, %.1f%% packet loss, time %lums\n", 
+				pkts_tx, pkts_rx, ( ( pkts_tx - pkts_rx ) * 100.0 ) / pkts_tx,  (UL) 999 );
+	
+	fflush( stdout );
 }
 
 
 ///
-/// given an IP address, get the hostname string, or
+/// given an IP address, write IP to host buffer, or
 /// given a hostname, get the corresponding IP address
 ///
 /// @param dest: destination string
@@ -86,10 +139,12 @@ static void ping_loop( )
 /// 	ip_buf may be NULL or written
 ///		host_buf may be NULL or written
 ///
-static void resolve( char* dest, char* ip_buf, char* host_buf ) {
+static void 
+resolve( char* dest, char* ip_buf, char* host_buf ) {
 	struct sockaddr_in sa;
-	if ( !inet_pton( AF_INET, dest, &sa.sin_addr ) == 0 ) {
-		printf("IP\n");
+	if ( inet_pton( AF_INET, dest, &sa.sin_addr ) == 1 ) {
+		strncpy( ip_buf, dest, IP_LEN );		
+		strncpy( host_buf, ip_buf, IP_LEN );
 	} else {
 		strncpy( host_buf, dest, HOST_NAME_MAX );
 
@@ -110,9 +165,6 @@ static void resolve( char* dest, char* ip_buf, char* host_buf ) {
 
 		freeaddrinfo( addr_res );
 	}
-
-
-
 }
 
 
@@ -226,7 +278,15 @@ main( int argc, char* argv[] )
 		return EXIT_FAILURE;
 	}
 
-	printf("IP: %s\nHost: %s\n", ip, host);
+	int sock = socket( AF_INET, SOCK_RAW, IPPROTO_ICMP );
+	if( sock < 0 ) {
+		fprintf( stderr, "ping: socket() failed (%d): %s\n", errno, strerror( errno ) );
+		return EXIT_FAILURE;
+	}
+
+	printf("PING %s (%s) %lu(%lu) bytes of data.\n", host, ip, pkt_sz, pkt_sz + 28 );
+	ping_loop( sock, ip, count, wait, pkt_sz, timeout );
+
 
 	return EXIT_SUCCESS;
 }
