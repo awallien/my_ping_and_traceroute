@@ -48,8 +48,10 @@
 #define IP_LEN 15
 
 #define LL long long
+#define UC unsigned char
 #define UI unsigned int
 #define UL unsigned long
+#define US unsigned short
 
 /// boolean used to determine if pinging should stop
 static volatile bool stop = false;
@@ -64,6 +66,45 @@ ctrl_c_handler( )
 {
 	stop = true;
 	printf("stop!\n");
+}
+
+
+///
+/// Calculate the checksum for ICMP header
+///
+/// According to RFC 792:
+///
+///   The checksum is the 16-bit ones's complement of the one's
+///   complement sum of the ICMP message starting with the ICMP Type.
+///   For computing the checksum , the checksum field should be zero.
+///   If the total length is odd, the received data is padded with one
+///   octet of zeros for computing the checksum.  This checksum may be
+///   replaced in the future.
+///
+/// @param hdr: ICMP header struct
+/// @param hdr_len: length of header struct
+///
+/// @return the checksum value
+///
+static US
+calculate_checksum( struct icmphdr* hdr, size_t hdr_len ) {
+	UC* hdr_buf = ( UC* ) hdr;
+	int sum = 0;
+
+	// get the sum of the ICMP message in 16 bit words
+	while( hdr_len > 1 ) {
+		sum += ( hdr_buf[0] << 8 ) | hdr_buf[1];
+		hdr_buf += 2; hdr_len -= 2;
+	}
+	// for odd lengths, last octet is zeros
+	if ( hdr_len == 1 ) {
+		sum += ( hdr_buf[0] << 8 );
+	}
+
+	// for converting 32 bit sum to 16 bit
+	sum = (sum >> 16) + (sum & 0xFFFF);
+	sum += (sum >> 16);
+	return ( US ) ( ~sum & 0xFFFF );
 }
 
 
@@ -84,7 +125,9 @@ ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
 	bool count_set = count != 0;
 	UL pkts_tx, pkts_rx;
 	double rtt_min, rtt_avg, rtt_max, rtt_mdev;
-	int sockopt;
+	
+	struct icmphdr icmp_hdr;
+	memset( &icmp_hdr, 0, sizeof( icmp_hdr ) );
 	
 	// set the 'wait' timeout for the socket
 	struct timeval time_wait;
@@ -106,6 +149,15 @@ ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
 		// break based off limited number of counts
 		if ( count_set && count-- == 0 )
 			break;
+
+
+		// set up the ICMP header data, according to
+		// https://tools.ietf.org/html/rfc792, page 13
+		icmp_hdr.type = ICMP_ECHO;
+		icmp_hdr.code = 0;
+		icmp_hdr.checksum = calculate_checksum( &icmp_hdr, sizeof( icmp_hdr ) );
+		icmp_hdr.un.echo.id = 0;
+		icmp_hdr.un.echo.sequence = 0;
 
 		// send the socket
 
@@ -280,7 +332,7 @@ main( int argc, char* argv[] )
 
 	int sock = socket( AF_INET, SOCK_RAW, IPPROTO_ICMP );
 	if( sock < 0 ) {
-		fprintf( stderr, "ping: socket() failed (%d): %s\n", errno, strerror( errno ) );
+		fprintf( stderr, "ping: socket() failed: %s\n", strerror( errno ) );
 		return EXIT_FAILURE;
 	}
 
