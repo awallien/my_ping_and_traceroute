@@ -44,6 +44,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #define IP_LEN 15
 
@@ -113,7 +114,7 @@ calculate_checksum( struct icmphdr* hdr, size_t hdr_len ) {
 /// outputs the statistics of the whole ping execution
 /// 
 /// @param sock_fd: socket file descriptor for sending ICMP packets
-/// @param ip: the ip address
+/// @param ip: valid ip address
 /// @param count: the number of packets per ping execution
 /// @param wait: the seconds to wait after sending each packet
 /// @param pkt_sz: the size of packets to send to destination
@@ -126,8 +127,22 @@ ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
 	UL pkts_tx, pkts_rx;
 	double rtt_min, rtt_avg, rtt_max, rtt_mdev;
 	
-	struct icmphdr icmp_hdr;
-	memset( &icmp_hdr, 0, sizeof( icmp_hdr ) );
+	// Destination IP address
+	struct in_addr dest;
+	if( inet_aton( ip, &dest ) == 0 ) {
+		// should be unreachable
+		fprintf( stderr, "ping: Invalid address: %s\n", ip );
+		return;
+	}
+
+    // IP address in the echo reply packet
+    struct in_addr reply_addr;
+    memset( &reply_addr, 0, sizeof( struct in_addr ) );
+
+	// ICMP data
+    struct icmphdr icmp_data;
+	size_t icmp_data_sz = sizeof( icmp_data );
+    memset( &icmp_data, 0, icmp_data_sz );
 	
 	// set the 'wait' timeout for the socket
 	struct timeval time_wait;
@@ -150,18 +165,40 @@ ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
 		if ( count_set && count-- == 0 )
 			break;
 
+        // setting flag to determine if sending the ping packet was a success
+        bool sent_flag = true;
 
-		// set up the ICMP header data, according to
+	    // zeroing the icmp header
+        memset( &icmp_data, 0, sizeof( icmp_data ) );
+		
+        // set up the ICMP header data, according to
 		// https://tools.ietf.org/html/rfc792, page 13
-		icmp_hdr.type = ICMP_ECHO;
-		icmp_hdr.code = 0;
-		icmp_hdr.checksum = calculate_checksum( &icmp_hdr, sizeof( icmp_hdr ) );
-		icmp_hdr.un.echo.id = 0;
-		icmp_hdr.un.echo.sequence = 0;
-
-		// send the socket
+		icmp_data.type = ICMP_ECHO;
+		icmp_data.code = 0;
+		icmp_data.un.echo.id = getpid() & 0xFFFF;	// setting ID to determine if packet belongs to us
+		icmp_data.un.echo.sequence = 0;
+        
+        // calculate the checksum last
+		icmp_data.checksum = calculate_checksum( &icmp_data, icmp_data_sz );
+		
+        // send the packet
+		if ( sendto( sock_fd, &icmp_data, icmp_data_sz, 0, 
+                    (struct sockaddr*) &dest, sizeof( dest ) ) <= 0 ) {
+			fprintf( stderr, "ping: packet failed to send.\n" );
+            sent_flag = false;
+		}
 
 		// any reply?
+        int recv_status = recvfrom( sock_fd, &icmp_data, icmp_data_sz, 0,
+                (struct sockaddr*) &reply_addr, sizeof( reply_addr ) );
+            
+        if ( recv_status < 0 ) {
+            fprintf( stderr, "ping: received timeout\n" );
+        } else if( recv_status == 0 ) {
+            fprintf( stderr, "ping: received empty ICMP reply.\n" );
+        } else {
+            printf( "ping: received reply from %s\n", inet_ntoa( reply_addr ) );
+        }
 
 	}
 
@@ -330,7 +367,12 @@ main( int argc, char* argv[] )
 		return EXIT_FAILURE;
 	}
 
-	int sock = socket( AF_INET, SOCK_RAW, IPPROTO_ICMP );
+	struct protoent* protocol = getprotobyname("icmp");
+	if ( !protocol ) {
+		fprintf( stderr, "ping: Failed to retrieve protocol\n" );
+	}
+	
+	int sock = socket( AF_INET, SOCK_RAW, protocol->p_proto );
 	if( sock < 0 ) {
 		fprintf( stderr, "ping: socket() failed: %s\n", strerror( errno ) );
 		return EXIT_FAILURE;
@@ -342,3 +384,4 @@ main( int argc, char* argv[] )
 
 	return EXIT_SUCCESS;
 }
+
