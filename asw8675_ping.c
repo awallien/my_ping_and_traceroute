@@ -46,6 +46,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#define IP_ICMP_HDR_SZ 28
 #define IP_LEN 15
 
 #define LL long long
@@ -57,6 +58,11 @@
 /// boolean used to determine if pinging should stop
 static volatile bool stop = false;
 
+
+typedef struct icmpdata_s {
+    struct icmphdr hdr;
+    char payload[USHRT_MAX - IP_ICMP_HDR_SZ];
+} IcmpData;
 
 ///
 /// signal handler when the user inputs control c for this program, which
@@ -88,24 +94,24 @@ ctrl_c_handler( )
 /// @return the checksum value
 ///
 static US
-calculate_checksum( struct icmphdr* hdr, size_t hdr_len ) {
-	UC* hdr_buf = ( UC* ) hdr;
-	int sum = 0;
+calculate_checksum( void* hdr, size_t hdr_len ) 
+{
+    UI sum = 0;
+    US* buf = ( US* ) hdr;
 
-	// get the sum of the ICMP message in 16 bit words
-	while( hdr_len > 1 ) {
-		sum += ( hdr_buf[0] << 8 ) | hdr_buf[1];
-		hdr_buf += 2; hdr_len -= 2;
-	}
-	// for odd lengths, last octet is zeros
-	if ( hdr_len == 1 ) {
-		sum += ( hdr_buf[0] << 8 );
-	}
+    while( hdr_len > 1 ) {
+        sum += *buf++;
+        hdr_len -= 2;
+    }
+
+    if ( hdr_len == 1 ) {
+        sum += *( UC* ) buf;
+    }
 
 	// for converting 32 bit sum to 16 bit
 	sum = (sum >> 16) + (sum & 0xFFFF);
 	sum += (sum >> 16);
-	return ( US ) ( ~sum & 0xFFFF );
+	return ( US ) ( ~sum );
 }
 
 
@@ -114,41 +120,44 @@ calculate_checksum( struct icmphdr* hdr, size_t hdr_len ) {
 /// outputs the statistics of the whole ping execution
 /// 
 /// @param sock_fd: socket file descriptor for sending ICMP packets
-/// @param ip: valid ip address
+/// @param ipaddr: valid ip address
 /// @param count: the number of packets per ping execution
 /// @param wait: the seconds to wait after sending each packet
 /// @param pkt_sz: the size of packets to send to destination
 /// @param timeout: TTL of packets
 ///
+/// @pre all parameter arguments are valid
+///
 static void 
-ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
+ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeout )
 {
 	bool count_set = count != 0;
-	UL pkts_tx, pkts_rx;
-	double rtt_min, rtt_avg, rtt_max, rtt_mdev;
+	UL pkts_tx = 0, pkts_rx = 0;
+	double rtt_min = 0, rtt_avg = 0, rtt_max = 0, rtt_mdev = 0;
 	
 	// Destination IP address
-	struct in_addr dest;
-	if( inet_aton( ip, &dest ) == 0 ) {
-		// should be unreachable
-		fprintf( stderr, "ping: Invalid address: %s\n", ip );
-		return;
-	}
+	struct sockaddr_in dest;
+    memset( &dest, 0, sizeof( struct sockaddr_in ) );
+    dest.sin_port = 0;
+    dest.sin_family = AF_INET;
+    inet_pton( AF_INET, ipaddr, &dest.sin_addr );
+
 
     // IP address in the echo reply packet
-    struct in_addr reply_addr;
-    memset( &reply_addr, 0, sizeof( struct in_addr ) );
+    struct sockaddr_in reply_addr;
+    memset( &reply_addr, 0, sizeof( struct sockaddr_in ) );
+    socklen_t reply_addr_sz;
 
 	// ICMP data
-    struct icmphdr icmp_data;
-	size_t icmp_data_sz = sizeof( icmp_data );
-    memset( &icmp_data, 0, icmp_data_sz );
-	
-	// set the 'wait' timeout for the socket
-	struct timeval time_wait;
-	time_wait.tv_sec = (unsigned int) wait;
-	time_wait.tv_usec = 0;
-	if ( setsockopt( sock_fd, SOL_SOCKET, SO_RCVTIMEO, &time_wait, sizeof( time_wait ) ) ) {
+    IcmpData data;
+	size_t data_sz = pkt_sz;
+
+	// set the recvfrom timeout for the socket
+	struct timeval recv_timeout;
+	recv_timeout.tv_sec = 1;   // one second delay
+	recv_timeout.tv_usec = 0;
+	if ( setsockopt( sock_fd, SOL_SOCKET, SO_RCVTIMEO, 
+            &recv_timeout, sizeof( recv_timeout ) ) ) {
 		fprintf( stderr, "ping: setsockopt( SO_RCVTIMEO ) failed: %s\n", strerror( errno ) );
 		return;
 	}
@@ -169,41 +178,47 @@ ping_loop( int sock_fd, char* ip, UL count, double wait, UL pkt_sz, UI timeout )
         bool sent_flag = true;
 
 	    // zeroing the icmp header
-        memset( &icmp_data, 0, sizeof( icmp_data ) );
+        memset( &data, 0, data_sz );
 		
         // set up the ICMP header data, according to
 		// https://tools.ietf.org/html/rfc792, page 13
-		icmp_data.type = ICMP_ECHO;
-		icmp_data.code = 0;
-		icmp_data.un.echo.id = getpid() & 0xFFFF;	// setting ID to determine if packet belongs to us
-		icmp_data.un.echo.sequence = 0;
+		data.hdr.type = ICMP_ECHO;
+		data.hdr.code = 0;
+		data.hdr.un.echo.id = getpid();
+		data.hdr.un.echo.sequence = 0;
         
         // calculate the checksum last
-		icmp_data.checksum = calculate_checksum( &icmp_data, icmp_data_sz );
+		data.hdr.checksum = calculate_checksum( &data, data_sz );
 		
-        // send the packet
-		if ( sendto( sock_fd, &icmp_data, icmp_data_sz, 0, 
+        // send the request icmp
+		if ( sendto( sock_fd, &data, pkt_sz+IP_ICMP_HDR_SZ, 0, 
                     (struct sockaddr*) &dest, sizeof( dest ) ) <= 0 ) {
-			fprintf( stderr, "ping: packet failed to send.\n" );
+            perror( "ping: failed to send icmp request" );
             sent_flag = false;
 		}
 
+        pkts_tx += sent_flag ? 1 : 0;
+
 		// any reply?
-        int recv_status = recvfrom( sock_fd, &icmp_data, icmp_data_sz, 0,
-                (struct sockaddr*) &reply_addr, sizeof( reply_addr ) );
+        int recv_status = recvfrom( sock_fd, &data, pkt_sz+IP_ICMP_HDR_SZ, 0,
+                (struct sockaddr*) &reply_addr, &reply_addr_sz );
             
         if ( recv_status < 0 ) {
-            fprintf( stderr, "ping: received timeout\n" );
+            fprintf( stderr, "ping: received timeout.\n");
         } else if( recv_status == 0 ) {
-            fprintf( stderr, "ping: received empty ICMP reply.\n" );
+            perror( "ping: received empty ICMP reply" );
         } else {
-            printf( "ping: received reply from %s\n", inet_ntoa( reply_addr ) );
+            printf( "ping: received reply from %s\n", inet_ntoa( reply_addr.sin_addr ) ); 
+            pkts_rx++; 
         }
+
+        // delay before next request
+        usleep( wait * 1000000 );
 
 	}
 
 	// all done, print statistics
-	printf( "\n--- %s ping statistics ---\n", ip );
+	printf( "\n--- %s ping statistics ---\n", ipaddr );
 	printf( "%lu packets transmitted, %lu received, %.1f%% packet loss, time %lums\n", 
 				pkts_tx, pkts_rx, ( ( pkts_tx - pkts_rx ) * 100.0 ) / pkts_tx,  (UL) 999 );
 	
@@ -315,8 +330,8 @@ main( int argc, char* argv[] )
 			// packet size
 			case 's': {
 				LL tmp_pkt_sz = strtol( optarg, &optarg, 10 );
-				if ( tmp_pkt_sz < 0 || tmp_pkt_sz > INT_MAX || *optarg ) {
-					fprintf( stderr, "ping: invalid argument: '%lld': out of range: 0 <= value <= %d\n", tmp_pkt_sz, INT_MAX );
+				if ( tmp_pkt_sz < 0 || tmp_pkt_sz > USHRT_MAX || *optarg ) {
+					fprintf( stderr, "ping: invalid argument: '%lld': out of range: 0 <= value <= %d\n", tmp_pkt_sz, USHRT_MAX );
 					return EXIT_FAILURE;
 				}
 				pkt_sz = ( UL ) tmp_pkt_sz;
@@ -378,9 +393,10 @@ main( int argc, char* argv[] )
 		return EXIT_FAILURE;
 	}
 
-	printf("PING %s (%s) %lu(%lu) bytes of data.\n", host, ip, pkt_sz, pkt_sz + 28 );
+	printf("PING %s (%s) %lu(%lu) bytes of data.\n", host, ip, pkt_sz, pkt_sz + IP_ICMP_HDR_SZ );
 	ping_loop( sock, ip, count, wait, pkt_sz, timeout );
 
+    close( sock );
 
 	return EXIT_SUCCESS;
 }
