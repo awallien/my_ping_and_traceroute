@@ -208,9 +208,9 @@ ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeo
 
     // IP address in the echo reply packet
     struct sockaddr_in reply_addr;
-    char domain_name[HOST_NAME_MAX+1];
+    char domain_name[NI_MAXHOST +1];
     memset( &reply_addr, 0, sizeof( struct sockaddr_in ) );
-    memset( domain_name, 0, HOST_NAME_MAX+1 );
+    memset( domain_name, 0, NI_MAXHOST+1 );
     socklen_t reply_addr_sz = sizeof( reply_addr );
 
 
@@ -289,11 +289,9 @@ ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeo
         } else if( recv_status == 0 ) {
             perror( "ping: received empty ICMP reply" );
         } else {
-            /*if ( getnameinfo( (struct sockaddr* )&reply_addr, 
-                    sizeof( reply_addr.sin_addr ), domain_name, HOST_NAME_MAX, 
-                    NULL, 0, NI_NAMEREQD ) ) {
-                domain_name[0] = '\0';
-            }*/
+            getnameinfo( (struct sockaddr* )&reply_addr, 
+                    reply_addr_sz, domain_name, NI_MAXHOST, 
+                    NULL, 0, NI_NAMEREQD );
 
             // we got a reply, but is it from the destination address?
             // if not - TTL exceeded
@@ -333,6 +331,7 @@ ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeo
         time_difference( ts_stat_start, ts_stat_end ) );
 
     // only print the rtt statistics if we received any packets
+    // info about mdev: https://serverfault.com/questions/333116/what-does-mdev-mean-in-ping8
     if ( pkts_rx ) {
         double rtt_avg = rtt_total / pkts_rx;
         rtt_total2 /= pkts_rx;
@@ -340,7 +339,6 @@ ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeo
         double rtt_mdev = sqrt( rtt_total2 - rtt_total * rtt_total );
         printf( "rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", rtt_min, rtt_avg, rtt_max, rtt_mdev ); 
     }
-
 
     fflush( stdout );
 }
