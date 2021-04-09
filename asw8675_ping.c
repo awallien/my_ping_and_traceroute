@@ -129,7 +129,8 @@ calculate_checksum( void* hdr, size_t hdr_len )
 ///     host_buf may be NULL or written
 ///
 static void 
-resolve( char* dest, char* ip_buf, char* host_buf ) {
+resolve( char* dest, char* ip_buf, char* host_buf ) 
+{
     struct sockaddr_in sa;
     if ( inet_pton( AF_INET, dest, &sa.sin_addr ) == 1 ) {
         strncpy( ip_buf, dest, IP_LEN );    
