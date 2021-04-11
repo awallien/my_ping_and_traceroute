@@ -168,7 +168,6 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
 {
     UC ttl = 0;
     struct timespec ts_sock_start, ts_sock_end;
- 
 
     // ICMP data
     struct icmphdr hdr;
@@ -187,14 +186,33 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
     // Reply address
     struct sockaddr_in reply;
     socklen_t reply_sz = sizeof( reply );
-    char name[NI_MAXHOST+1];
+    char ip_buf[IP_LEN+1];
+    char name_buf[NI_MAXHOST+1];
     memset( &reply, 0, reply_sz );
-    memset( &name, 0, sizeof( name ) );
+    memset( ip_buf, 0, IP_LEN+1 );
+    memset( name_buf, 0, NI_MAXHOST+1 );
+
+
+    // set timeout for recvfrom to 3 seconds
+    struct timeval recv_timeout = { .tv_sec = 1, .tv_usec = 0 };
+    if ( setsockopt( sock_fd, SOL_SOCKET, SO_RCVTIMEO,
+            (struct timeval*)&recv_timeout, sizeof( recv_timeout ) ) ) {
+        fprintf( stderr, "traceroute: setsockopt( SO_RCVTIMEO ) failed: %s\n", strerror( errno ) );
+        return;
+    }
 
 
     // increment ttl until limit reached or destination matches reply
     while ( ttl++ != 255 && IP_ADDR( dest ) != IP_ADDR( reply ) ) {
-        printf( "%d ", ttl );
+        printf( "%d   ", ttl );
+
+        bool no_reply = true;
+
+        // set ttl in ip header
+        if ( setsockopt( sock_fd, SOL_IP, IP_TTL, &ttl, sizeof( ttl ) ) ) {
+            fprintf( stderr, "traceroute: setsockopt( IP_TTL ) failed: %s\n", strerror( errno ) );
+            return;
+        }       
         
         // queries - prepare ICMP data and send, receive reply
         for( int query = 0; query < nqueries; query++ ) {
@@ -204,21 +222,37 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
             hdr.un.echo.id = getpid();
             hdr.un.echo.sequence = 0;
 
+            // store the header into the buffer, calculate the checksum of
+            // buffer, and store the checksum value into the buffer
             memcpy( buff, &hdr, hdr_sz ); 
             hdr.checksum = calculate_checksum( buff, buff_sz );
             memcpy( buff+CHKSM_SZ, &hdr.checksum, CHKSM_SZ );
 
+            // clocking the send and receive socket functions
             clock_gettime( CLOCK_MONOTONIC, &ts_sock_start );
 
+            if( sendto( sock_fd, buff, buff_sz, 0, 
+                        (struct sockaddr*) &dest, sizeof( dest ) ) <= 0 ) {
+                perror( "traceroute: failed to send icmp packet" );
+                fprintf( stderr, "Exiting..." );
+                return;
+            } 
+
+            int recv_status = recvfrom( sock_fd, buff, buff_sz, 0,
+                    ( struct sockaddr* ) &reply, &reply_sz );
 
             clock_gettime( CLOCK_MONOTONIC, &ts_sock_end );
 
+            // calculate RTT
             size_t 
                 secs = ts_sock_end.tv_sec - ts_sock_start.tv_sec,
                 nsecs = ts_sock_end.tv_nsec - ts_sock_start.tv_nsec,
                 msecs = 1000 * secs + nsecs / 1000000;
 
-            if( IP_ADDR( reply ) ) {
+            // did we receive a reply from hop?
+            if( IP_ADDR( reply ) && recv_status > 0 ) {
+                no_reply = false;
+                strncpy( ip_buf, inet_ntoa( reply.sin_addr ), reply_sz );
                 if ( msecs < 1 )
                     printf( "<1 ms   " );
                 else
@@ -228,11 +262,21 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
             } 
             
         }
+
+        // print out IP address to hop, and resolve IP if need to
+        if ( !no_reply ) {
+            resolve( ip_buf, ip_buf, name_buf ); 
+            if( is_resolved && strcmp( ip_buf, name_buf ) ) {
+                printf( "[%s] ", name_buf );
+            }
+            printf( "%s", ip_buf );
+        }
         printf( "\n" );
 
     }
 
-
+    // all done!
+    printf( "Traceroute completed.\n" );
 }
 
 
