@@ -1,0 +1,27 @@
+# Project 2: Build Your Own Ping and Traceroute
+
+Two programs that simulate the 'ping' and 'traceroute' like the real ones in Linux.
+
+## Requirements
+
+This program is written in C and compiled using gcc version 9.3.0.
+YOU MUST BE ROOT/ADMIN TO EXECUTE THE PROGRAMS, since opening raw sockets cannot be done
+on standard user. 
+
+## Compile
+
+ping:
+    gcc asw8675_ping.c -lm -o ping 
+
+traceroute:
+    gcc asw8675_traceroute.c -o traceroute
+
+
+## Usage
+
+ping:
+    ./ping destination [-c count] [-i wait] [-s packetsize] [-t timeout]
+
+traceroute:
+    ./traceroute destination [-n numeric only] [-q nqueries] [-S]
+
