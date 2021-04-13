@@ -297,12 +297,12 @@ ping_loop( int sock_fd, char* ipaddr, UL count, double wait, UL pkt_sz, UI timeo
             // we got a reply, but is it from the destination address?
             // if not - TTL exceeded
             if ( reply_addr.sin_addr.s_addr != dest.sin_addr.s_addr ) {
-                printf( "From %s (%s): icmp_seq=%d Time to live exceeded\n",
+                printf( "From %s (%s): icmp_seq=%ld Time to live exceeded\n",
                         domain_name, inet_ntoa( reply_addr.sin_addr ), pkts_tx );
                 pkts_err++;
             } else {
                 double rtt = time_difference( ts_sock_start, ts_sock_end );
-                printf( "%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%4.2f ms\n", 
+                printf( "%d bytes from %s (%s): icmp_seq=%ld ttl=%d time=%4.2f ms\n", 
                         recv_status, domain_name, inet_ntoa( reply_addr.sin_addr ), 
                         pkts_tx, timeout, rtt ); 
 
