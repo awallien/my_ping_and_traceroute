@@ -39,7 +39,7 @@
 #include <unistd.h>
 
 #define CHKSM_SZ 2
-#define ICMP_PAYLOAD_SZ 56
+#define ICMP_PAYLOAD_SZ 5
 #define IP_LEN 15
 #define HOPS_MAX 255
 #define NQUERIES_MAX 10
@@ -169,6 +169,11 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
     UC ttl = 0;
     struct timespec ts_sock_start, ts_sock_end;
 
+
+    // hold number of 'no answers' for summary 
+    UC no_answer[HOPS_MAX];
+    memset( no_answer, 0, HOPS_MAX );
+
     // ICMP data
     struct icmphdr hdr;
     size_t hdr_sz = sizeof( hdr );
@@ -203,7 +208,7 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
 
 
     // increment ttl until limit reached or destination matches reply
-    while ( ttl++ != 255 && IP_ADDR( dest ) != IP_ADDR( reply ) ) {
+    while ( ttl++ != HOPS_MAX && IP_ADDR( dest ) != IP_ADDR( reply ) ) {
         printf( "%d   ", ttl );
 
         bool no_reply = true;
@@ -258,6 +263,7 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
                 else
                     printf( "%lu ms   ", msecs );
             } else { 
+                no_answer[ttl-1]++;
                 printf( "*   " );
             } 
             
@@ -265,9 +271,10 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
 
         // print out IP address to hop, and resolve IP if need to
         if ( !no_reply ) {
-            resolve( ip_buf, ip_buf, name_buf ); 
-            if( is_resolved && strcmp( ip_buf, name_buf ) ) {
-                printf( "[%s] ", name_buf );
+            if( is_resolved ) {
+                resolve( ip_buf, ip_buf, name_buf );
+                if ( strncmp( ip_buf, name_buf, IP_LEN ) ) 
+                    printf( "[%s] ", name_buf );
             }
             printf( "%s", ip_buf );
         }
@@ -277,6 +284,15 @@ traceroute( int sock_fd, char* ipaddr, bool is_resolved, UC nqueries, bool summa
 
     // all done!
     printf( "Traceroute completed.\n" );
+
+
+    if ( summary ) {
+        printf( "---Summary---\n" );
+        int no_ans_idx;
+        for( no_ans_idx = 0; no_ans_idx < ttl-1; no_ans_idx++ ) {
+            printf("    Hop %d: %d/%d probes were not answered.\n", no_ans_idx+1, no_answer[no_ans_idx], nqueries );
+        }
+    }
 }
 
 
@@ -327,8 +343,10 @@ main( int argc, char* argv[] )
 				break;
             }
 			case '?':
-				if ( isprint( optopt ) && !( optopt == 'n' || optopt == 'q' || optopt == 'S' ) )
+				if ( isprint( optopt ) && !( optopt == 'n' || optopt == 'q' || optopt == 'S' ) ) {
 					fprintf( stderr, "Unknown option '-%c'.\n", optopt );
+                    return EXIT_FAILURE;
+                }
 		}
 	}
 
